@@ -1,85 +1,129 @@
 <?php
-require_once("clsconnect.php"); 
+require_once("clsconnect.php");
 
 class clsLapPYCNL extends ketnoi {
     private $conn;
-    public function __construct($conn) { $this->conn = $conn; }
+    public function __construct($conn) {
+        $this->conn = $conn;
+    }
 
-    // ✅ Lấy danh sách nguyên liệu đạt chuẩn
+    /* -------------------------------------------------
+     🧩 1️⃣ LẤY DANH SÁCH NGUYÊN LIỆU ĐẠT CHUẨN
+    ------------------------------------------------- */
     public function getNguyenLieu() {
-        $sql = "SELECT maNL, tenNL, moTa, dinhMuc, donViTinh, soLuongTon 
-                FROM nguyenlieu WHERE trangThai = 'Đạt'";
-        return $this->conn->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT maNL, tenNL, moTa, dinhMuc, donViTinh, soLuongTon
+                FROM nguyenlieu
+                WHERE trangThai = 'Đạt'";
+        return $this->laydulieu($this->conn, $sql);
     }
 
-    // ✅ Lấy danh sách kế hoạch sản xuất
+    /* -------------------------------------------------
+     🧩 2️⃣ LẤY DANH SÁCH KẾ HOẠCH SẢN XUẤT
+    ------------------------------------------------- */
     public function getKeHoachSanXuat() {
-        $sql = "SELECT maKH, tenSP, soLuongCanSX FROM kehoachsanxuat";
-        return $this->conn->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT k.maKHSX, k.maDH, d.trangThai AS trangThaiDH
+                FROM kehoachsanxuat k
+                JOIN donhang d ON k.maDH = d.maDH
+                ORDER BY k.maKHSX DESC";
+        return $this->laydulieu($this->conn, $sql);
     }
 
-    // ✅ Thêm phiếu + chi tiết phiếu
-    public function insertPhieuYeuCau($nguoiLap, $details) {
+    /* -------------------------------------------------
+     🧩 3️⃣ LẤY DANH SÁCH DÂY CHUYỀN THEO XƯỞNG
+    ------------------------------------------------- */
+    public function getDayChuyenTheoXuong($maXuong) {
+        $sql = "SELECT maDC, tenDC
+                FROM daychuyen
+                WHERE maXuong = $maXuong AND trangThai = 'Hoạt động'";
+        return $this->laydulieu($this->conn, $sql);
+    }
+
+    /* -------------------------------------------------
+     🧩 4️⃣ LẤY NGUYÊN LIỆU THEO KẾ HOẠCH SẢN XUẤT VÀ XƯỞNG
+         (Dữ liệu dựa trên bảng khsx_chitiet_nguyenlieu)
+    ------------------------------------------------- */
+    public function getNguyenLieuTheoKeHoach($maKHSX, $maXuong) {
+        $sql = "SELECT n.maNL, n.tenNL, n.donViTinh, n.soLuongTon,
+                       d.tenDC, d.maDC,
+                       k.tongSLCan AS soLuongCan
+                FROM khsx_chitiet_nguyenlieu k
+                JOIN nguyenlieu n ON k.maNL = n.maNL
+                JOIN daychuyen d ON d.maXuong = $maXuong
+                WHERE k.maKHSX = $maKHSX";
+        return $this->laydulieu($this->conn, $sql);
+    }
+
+    /* -------------------------------------------------
+     🧩 5️⃣ THÊM PHIẾU YÊU CẦU NGUYÊN LIỆU + CHI TIẾT
+    ------------------------------------------------- */
+    public function insertPhieuYeuCau($nguoiLap, $maXuong, $details) {
         try {
-            $this->conn->beginTransaction();
+            $this->conn->begin_transaction();
 
-            // 1️⃣ Tạo phiếu mới
-            $stmt = $this->conn->prepare("INSERT INTO phieuyeucaunguyenlieu (ngayLap, nguoiLap, trangThai)
-                                          VALUES (CURDATE(), :nguoiLap, 'Chờ duyệt')");
-            $stmt->execute([':nguoiLap' => $nguoiLap]);
-            $maPYCNL = $this->conn->lastInsertId();
+            // Tạo phiếu mới
+            $sqlPhieu = "INSERT INTO phieuyeucaunguyenlieu (ngayLap, nguoiLap, maXuong, trangThai)
+                         VALUES (CURDATE(), $nguoiLap, $maXuong, 'Chờ duyệt')";
+            $this->conn->query($sqlPhieu);
+            $maPYCNL = $this->conn->insert_id;
 
-            // 2️⃣ Lặp chi tiết nguyên liệu
-            $sqlDetail = "INSERT INTO chitietphieuyeucaunguyenlieu (maPYCNL, maKH, maNL, soLuongYeuCau)
-                          VALUES (:maPYCNL, :maKH, :maNL, :soLuongYeuCau)";
-            $stmtDetail = $this->conn->prepare($sqlDetail);
-
+            // Thêm từng nguyên liệu
             foreach ($details as $item) {
-                $stmtDetail->execute([
-                    ':maPYCNL' => $maPYCNL,
-                    ':maKH' => $item['maKH'],
-                    ':maNL' => $item['maNL'],
-                    ':soLuongYeuCau' => $item['soLuongYeuCau']
-                ]);
+                $maKH = intval($item['maKH']);
+                $maNL = intval($item['maNL']);
+                $maDC = intval($item['maDC']);
+                $soLuong = floatval($item['soLuongYeuCau']);
 
-                // 3️⃣ Trừ tồn kho tạm
-                $upd = $this->conn->prepare("UPDATE nguyenlieu 
-                                             SET soLuongTon = soLuongTon - :sl 
-                                             WHERE maNL = :maNL AND soLuongTon >= :sl");
-                $upd->execute([
-                    ':sl' => $item['soLuongYeuCau'],
-                    ':maNL' => $item['maNL']
-                ]);
+                $sqlCT = "INSERT INTO chitietphieuyeucaunguyenlieu (maPYCNL, maKH, maNL, maDC, soLuongYeuCau)
+                          VALUES ($maPYCNL, $maKH, $maNL, $maDC, $soLuong)";
+                $this->conn->query($sqlCT);
+
+                // Trừ tồn kho tạm (nếu có)
+                $sqlUpd = "UPDATE nguyenlieu 
+                           SET soLuongTon = soLuongTon - $soLuong
+                           WHERE maNL = $maNL AND soLuongTon >= $soLuong";
+                $this->conn->query($sqlUpd);
             }
 
             $this->conn->commit();
             return true;
         } catch (Exception $e) {
-            $this->conn->rollBack();
-            error_log($e->getMessage());
+            $this->conn->rollback();
+            error_log("Lỗi insertPhieuYeuCau: " . $e->getMessage());
             return false;
         }
     }
 
-    // ✅ Lấy danh sách phiếu yêu cầu
+    /* -------------------------------------------------
+     🧩 6️⃣ LẤY DANH SÁCH TẤT CẢ CÁC PHIẾU YÊU CẦU
+    ------------------------------------------------- */
     public function getAllPhieuYeuCau() {
-        $sql = "SELECT p.maPYCNL, p.ngayLap, u.hoTen AS nguoiLap, p.trangThai 
+        $sql = "SELECT p.maPYCNL, p.ngayLap, 
+                       nv.tenNV AS nguoiLap, 
+                       x.tenXuong, 
+                       p.trangThai
                 FROM phieuyeucaunguyenlieu p
-                JOIN nhanvien u ON p.nguoiLap = u.maNV
+                LEFT JOIN nhanvien nv ON p.nguoiLap = nv.maNV
+                LEFT JOIN xuong x ON p.maXuong = x.maXuong
                 ORDER BY p.maPYCNL DESC";
-        return $this->conn->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        return $this->laydulieu($this->conn, $sql);
     }
 
-    // ✅ Lấy chi tiết phiếu yêu cầu nguyên liệu
+    /* -------------------------------------------------
+     🧩 7️⃣ LẤY CHI TIẾT 1 PHIẾU YÊU CẦU NGUYÊN LIỆU
+    ------------------------------------------------- */
     public function getChiTietPhieu($maPYCNL) {
-        $sql = "SELECT c.maCTPYCNL, n.tenNL, k.tenSP, c.soLuongYeuCau
+        $sql = "SELECT c.maCTPYCNL, 
+                       n.tenNL, 
+                       s.tenSP, 
+                       d.tenDC, 
+                       c.soLuongYeuCau
                 FROM chitietphieuyeucaunguyenlieu c
                 JOIN nguyenlieu n ON c.maNL = n.maNL
-                JOIN kehoachsanxuat k ON c.maKH = k.maKH
-                WHERE c.maPYCNL = :ma";
-        $stmt = $this->conn->prepare($sql);
-        $stmt->execute([':ma' => $maPYCNL]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+                JOIN kehoachsanxuat k ON c.maKH = k.maKHSX
+                JOIN daychuyen d ON c.maDC = d.maDC
+                JOIN sanpham s ON k.maDH = s.maSP
+                WHERE c.maPYCNL = $maPYCNL";
+        return $this->laydulieu($this->conn, $sql);
     }
 }
 ?>

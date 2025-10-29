@@ -1,8 +1,6 @@
 <?php
-require_once(__DIR__ . "/../../class/clsKeHoachModel.php");
-require_once(__DIR__ . "/../../class/clscKeHoachSX.php");
-
-$ctrl = new cKeHoachSX();
+require_once(__DIR__ . "/../../class/clskehoachsx.php");
+$ctrl = new KeHoachModel();
 $dsKeHoach = $ctrl->getAll();
 ?>
 <!DOCTYPE html>
